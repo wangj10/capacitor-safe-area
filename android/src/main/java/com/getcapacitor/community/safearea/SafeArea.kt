@@ -2,6 +2,10 @@ package com.getcapacitor.community.safearea
 
 import android.app.Activity
 import android.graphics.Color
+import android.os.Build
+import android.view.View
+import android.view.Window
+import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.WebView
 import androidx.core.graphics.Insets
@@ -53,21 +57,58 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
 
     private fun updateAppearance(appearanceConfig: AppearanceConfig) {
         activity.runOnUiThread {
-            val windowInsetsControllerCompat =
-                WindowCompat.getInsetsController(activity.window, activity.window.decorView)
-            windowInsetsControllerCompat.isAppearanceLightStatusBars =
+            val window = activity.window
+            val decorView = window.decorView
+
+            val insetsController =
+                WindowCompat.getInsetsController(window, decorView)
+            insetsController.isAppearanceLightStatusBars =
                 appearanceConfig.statusBarContent == "dark"
-            windowInsetsControllerCompat.isAppearanceLightNavigationBars =
+            insetsController.isAppearanceLightNavigationBars =
                 appearanceConfig.navigationBarContent == "dark"
 
-            val window = activity.window
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val controller = window.insetsController
+                controller?.apply {
+                    setSystemBarsAppearance(
+                        if (appearanceConfig.statusBarContent == "dark")
+                            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                        else 0,
+                        WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
+                    )
 
-            if (appearanceConfig.customColorsForSystemBars) {
-                window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
-                window.statusBarColor = Color.parseColor(appearanceConfig.statusBarColor)
-                window.navigationBarColor = Color.parseColor(appearanceConfig.navigationBarColor)
-            } else {
-                window.clearFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+                    setSystemBarsAppearance(
+                        if (appearanceConfig.navigationBarContent == "dark")
+                            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                        else 0,
+                        WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
+                    )
+                }
+
+                if (appearanceConfig.customColorsForSystemBars) {
+                    window.statusBarColor = Color.parseColor(appearanceConfig.statusBarColor)
+                    window.navigationBarColor = Color.parseColor(appearanceConfig.navigationBarColor)
+                } else {
+                    window.statusBarColor = Color.TRANSPARENT
+                    window.navigationBarColor = Color.TRANSPARENT
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                if (appearanceConfig.statusBarContent == "dark") {
+                    decorView.systemUiVisibility =
+                        decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                }
+
+                if (appearanceConfig.customColorsForSystemBars) {
+                    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+                    window.statusBarColor = Color.parseColor(appearanceConfig.statusBarColor)
+                    window.navigationBarColor = Color.parseColor(appearanceConfig.navigationBarColor)
+                } else {
+                    window.statusBarColor = Color.TRANSPARENT
+                    window.navigationBarColor = Color.TRANSPARENT
+                }
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS)
+                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)
             }
         }
     }
@@ -82,18 +123,21 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             val windowInsets = ViewCompat.getRootWindowInsets(activity.window.decorView)
             val systemBarsInsets =
                 windowInsets?.getInsets(WindowInsetsCompat.Type.systemBars()) ?: Insets.NONE
+            val navBarInsets = windowInsets?.getInsets(WindowInsetsCompat.Type.navigationBars()) ?: Insets.NONE
             val imeInsets = windowInsets?.getInsets(WindowInsetsCompat.Type.ime()) ?: Insets.NONE
 
             val density = activity.resources.displayMetrics.density
 
             setProperty("top", Math.round(systemBarsInsets.top / density) + offset)
             setProperty("left", Math.round(systemBarsInsets.left / density))
-            if (imeInsets.bottom > 0) {
-                setProperty("bottom", 0)
-            } else {
-                setProperty("bottom", Math.round(systemBarsInsets.bottom / density) + offset)
-            }
             setProperty("right", Math.round(systemBarsInsets.right / density))
+
+            val bottomHeight = if (imeInsets.bottom > 0) {
+                imeInsets.bottom.coerceAtLeast(navBarInsets.bottom)
+            } else {
+                navBarInsets.bottom
+            }
+            setProperty("bottom", Math.round(bottomHeight / density) + offset)
 
             // To get the actual height of the keyboard, we need to subtract the height of the system bars from the height of the ime
             // Source: https://stackoverflow.com/a/75328335/8634342

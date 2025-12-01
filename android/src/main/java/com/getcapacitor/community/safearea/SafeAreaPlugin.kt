@@ -25,6 +25,17 @@ class SafeAreaPlugin : Plugin() {
         super.handleOnPause()
     }
 
+    override fun handleOnResume() {
+        val enabled = config.configJSON.optBoolean("enabled", false)
+
+        if (enabled) {
+            implementation?.offset = config.configJSON.optInt("offset", 0)
+            implementation?.enable(false, AppearanceConfig(config.configJSON))
+        }
+
+        super.handleOnPause()
+    }
+
     @PluginMethod(returnType = PluginMethod.RETURN_NONE)
     fun enable(call: PluginCall) {
         val jsonObject = call.getObject("config")
