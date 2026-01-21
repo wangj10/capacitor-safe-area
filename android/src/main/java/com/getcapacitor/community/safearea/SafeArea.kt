@@ -132,11 +132,7 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             setProperty("left", Math.round(systemBarsInsets.left / density))
             setProperty("right", Math.round(systemBarsInsets.right / density))
 
-            val bottomHeight = if (imeInsets.bottom > 0) {
-                imeInsets.bottom.coerceAtLeast(navBarInsets.bottom)
-            } else {
-                navBarInsets.bottom
-            }
+            val bottomHeight = navBarInsets.bottom
             setProperty("bottom", Math.round(bottomHeight / density) + offset)
 
             // To get the actual height of the keyboard, we need to subtract the height of the system bars from the height of the ime
