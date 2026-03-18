@@ -66,6 +66,14 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 appearanceConfig.statusBarContent == "dark"
             insetsController.isAppearanceLightNavigationBars =
                 appearanceConfig.navigationBarContent == "dark"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                window.isNavigationBarContrastEnforced = false
+                window.isStatusBarContrastEnforced = false
+            }
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
+            }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 val controller = window.insetsController
@@ -86,8 +94,8 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 }
 
                 if (appearanceConfig.customColorsForSystemBars) {
-                    window.statusBarColor = Color.parseColor(appearanceConfig.statusBarColor)
-                    window.navigationBarColor = Color.parseColor(appearanceConfig.navigationBarColor)
+                    window.statusBarColor = safeParseColor(appearanceConfig.statusBarColor)
+                    window.navigationBarColor = safeParseColor(appearanceConfig.navigationBarColor)
                 } else {
                     window.statusBarColor = Color.TRANSPARENT
                     window.navigationBarColor = Color.TRANSPARENT
@@ -99,9 +107,8 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 }
 
                 if (appearanceConfig.customColorsForSystemBars) {
-                    window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS)
-                    window.statusBarColor = Color.parseColor(appearanceConfig.statusBarColor)
-                    window.navigationBarColor = Color.parseColor(appearanceConfig.navigationBarColor)
+                    window.statusBarColor = safeParseColor(appearanceConfig.statusBarColor)
+                    window.navigationBarColor = safeParseColor(appearanceConfig.navigationBarColor)
                 } else {
                     window.statusBarColor = Color.TRANSPARENT
                     window.navigationBarColor = Color.TRANSPARENT
@@ -110,6 +117,16 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS)
                 window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION)
             }
+        }
+    }
+
+    private fun safeParseColor(colorStr: String?): Int {
+        if (colorStr.isNullOrEmpty()) return Color.TRANSPARENT
+        return try {
+            Color.parseColor(colorStr)
+        } catch (e: IllegalArgumentException) {
+            e.printStackTrace()
+            Color.TRANSPARENT
         }
     }
 
@@ -139,9 +156,11 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             // Source: https://stackoverflow.com/a/75328335/8634342
             val imeHeight = (imeInsets.bottom - systemBarsInsets.bottom).coerceAtLeast(0)
 
-            // Set padding of decorview so the scroll view stays correct.
-            // Otherwise the content behind the keyboard cannot be viewed by the user.
-            activity.window.decorView.setPadding(0, 0, 0, imeHeight)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                activity.window.decorView.setPadding(0, 0, 0, 0)
+            } else {
+                activity.window.decorView.setPadding(0, 0, 0, imeHeight)
+            }
         }
     }
 
