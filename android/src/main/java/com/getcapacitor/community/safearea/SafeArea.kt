@@ -19,18 +19,20 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
     private var decorFitsSystemWindowsNegated = false
 
     fun enable(updateInsets: Boolean, appearanceConfig: AppearanceConfig) {
-        activity.window.decorView.getRootView().setOnApplyWindowInsetsListener { view, insets ->
-            updateInsets()
+        activity.runOnUiThread {
+            if (!decorFitsSystemWindowsNegated) {
+                decorFitsSystemWindowsNegated = true
+                WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+            }
+        }
+
+        ViewCompat.setOnApplyWindowInsetsListener(activity.window.decorView.rootView) { view, insets ->
+            updateInsets(insets)
             if (!appearanceUpdatedInListener) {
-                // @TODO: appearance is sometimes not updated on app load
-                // probably because it is superseded by another plugin or native thing that updates the appearance
-                // This is probably not the best way to override that behaviour
-                // So we should think of something better than simply calling `updateAppearance` here
                 updateAppearance(appearanceConfig)
-                // Only update it once, to prevent an infinite loop
                 appearanceUpdatedInListener = true
             }
-            view.onApplyWindowInsets(insets)
+            WindowInsetsCompat.CONSUMED
         }
 
         resetDecorFitsSystemWindows()
@@ -130,14 +132,14 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
         }
     }
 
-    private fun updateInsets() {
+    private fun updateInsets(providedInsets: WindowInsetsCompat? = null) {
         activity.runOnUiThread {
             if (!decorFitsSystemWindowsNegated) {
                 decorFitsSystemWindowsNegated = true
                 WindowCompat.setDecorFitsSystemWindows(activity.window, false)
             }
 
-            val windowInsets = ViewCompat.getRootWindowInsets(activity.window.decorView)
+            val windowInsets = providedInsets ?: ViewCompat.getRootWindowInsets(activity.window.decorView)
             val systemBarsInsets =
                 windowInsets?.getInsets(WindowInsetsCompat.Type.systemBars()) ?: Insets.NONE
             val navBarInsets = windowInsets?.getInsets(WindowInsetsCompat.Type.navigationBars()) ?: Insets.NONE
@@ -156,7 +158,11 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             // Source: https://stackoverflow.com/a/75328335/8634342
             val imeHeight = (imeInsets.bottom - systemBarsInsets.bottom).coerceAtLeast(0)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            val isSamsungS10OnAndroid10 = Build.MANUFACTURER.equals("samsung", ignoreCase = true) &&
+                Build.MODEL.startsWith("SM-G97") &&
+                Build.VERSION.SDK_INT == Build.VERSION_CODES.Q
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R || isSamsungS10OnAndroid10) {
                 activity.window.decorView.setPadding(0, 0, 0, 0)
             } else {
                 activity.window.decorView.setPadding(0, 0, 0, imeHeight)
