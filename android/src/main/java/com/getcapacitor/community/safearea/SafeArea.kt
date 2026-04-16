@@ -2,9 +2,11 @@ package com.getcapacitor.community.safearea
 
 import android.app.Activity
 import android.graphics.Color
+import android.graphics.Rect
 import android.os.Build
+import android.util.Log
 import android.view.View
-import android.view.Window
+import android.view.ViewGroup
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.WebView
@@ -18,21 +20,21 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
     private var appearanceUpdatedInListener = false
     private var decorFitsSystemWindowsNegated = false
 
-    fun enable(updateInsets: Boolean, appearanceConfig: AppearanceConfig) {
-        activity.runOnUiThread {
-            if (!decorFitsSystemWindowsNegated) {
-                decorFitsSystemWindowsNegated = true
-                WindowCompat.setDecorFitsSystemWindows(activity.window, false)
-            }
-        }
+    private var isEnvironmentAutoResizing = false
 
-        ViewCompat.setOnApplyWindowInsetsListener(activity.window.decorView.rootView) { view, insets ->
-            updateInsets(insets)
+    fun enable(updateInsets: Boolean, appearanceConfig: AppearanceConfig) {
+        activity.window.decorView.getRootView().setOnApplyWindowInsetsListener { view, insets ->
+            updateInsets()
             if (!appearanceUpdatedInListener) {
+                // @TODO: appearance is sometimes not updated on app load
+                // probably because it is superseded by another plugin or native thing that updates the appearance
+                // This is probably not the best way to override that behaviour
+                // So we should think of something better than simply calling `updateAppearance` here
                 updateAppearance(appearanceConfig)
+                // Only update it once, to prevent an infinite loop
                 appearanceUpdatedInListener = true
             }
-            WindowInsetsCompat.CONSUMED
+            view.onApplyWindowInsets(insets)
         }
 
         resetDecorFitsSystemWindows()
@@ -132,14 +134,14 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
         }
     }
 
-    private fun updateInsets(providedInsets: WindowInsetsCompat? = null) {
+    private fun updateInsets() {
         activity.runOnUiThread {
             if (!decorFitsSystemWindowsNegated) {
                 decorFitsSystemWindowsNegated = true
                 WindowCompat.setDecorFitsSystemWindows(activity.window, false)
             }
 
-            val windowInsets = providedInsets ?: ViewCompat.getRootWindowInsets(activity.window.decorView)
+            val windowInsets = ViewCompat.getRootWindowInsets(activity.window.decorView)
             val systemBarsInsets =
                 windowInsets?.getInsets(WindowInsetsCompat.Type.systemBars()) ?: Insets.NONE
             val navBarInsets = windowInsets?.getInsets(WindowInsetsCompat.Type.navigationBars()) ?: Insets.NONE
@@ -154,18 +156,42 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             val bottomHeight = navBarInsets.bottom
             setProperty("bottom", Math.round(bottomHeight / density) + offset)
 
-            // To get the actual height of the keyboard, we need to subtract the height of the system bars from the height of the ime
-            // Source: https://stackoverflow.com/a/75328335/8634342
             val imeHeight = (imeInsets.bottom - systemBarsInsets.bottom).coerceAtLeast(0)
 
-            val isSamsungS10OnAndroid10 = Build.MANUFACTURER.equals("samsung", ignoreCase = true) &&
-                Build.MODEL.startsWith("SM-G97") &&
-                Build.VERSION.SDK_INT == Build.VERSION_CODES.Q
+            val decorView = activity.window.decorView
+            val isKeyboardVisible = windowInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
+            val contentView = decorView.findViewById<ViewGroup>(android.R.id.content)
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R || isSamsungS10OnAndroid10) {
-                activity.window.decorView.setPadding(0, 0, 0, 0)
-            } else {
-                activity.window.decorView.setPadding(0, 0, 0, imeHeight)
+            contentView?.let { content ->
+                if (isEnvironmentAutoResizing) {
+                    content.setPadding(0, 0, 0, 0)
+                    return@let
+                }
+
+                if (isKeyboardVisible) {
+                    val currentPaddingBottom = content.paddingBottom
+
+                    webView.evaluateJavascript("document.body.clientHeight") { result ->
+                        val webHeight = result?.replace("\"", "")?.toFloatOrNull() ?: 0f
+                        val screenHeightCss = decorView.height / density
+                        val imeHeightCss = imeHeight / density
+
+                        val isWindowShrunk = imeHeight > 0 && webHeight > 0 && (screenHeightCss - webHeight) > (imeHeightCss * 0.8)
+
+                        val isShrunkByOurPadding = isWindowShrunk && currentPaddingBottom > 0
+
+                        activity.runOnUiThread {
+                            if (isWindowShrunk && !isShrunkByOurPadding) {
+                                content.setPadding(0, 0, 0, 0)
+                                isEnvironmentAutoResizing = true
+                            } else if (!isEnvironmentAutoResizing) {
+                                content.setPadding(0, 0, 0, imeHeight)
+                            }
+                        }
+                    }
+                } else {
+                    content.setPadding(0, 0, 0, 0)
+                }
             }
         }
     }
