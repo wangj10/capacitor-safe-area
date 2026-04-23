@@ -4,13 +4,11 @@ import android.app.Activity
 import android.graphics.Color
 import android.graphics.Rect
 import android.os.Build
-import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.WebView
-import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -26,12 +24,7 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
         activity.window.decorView.getRootView().setOnApplyWindowInsetsListener { view, insets ->
             updateInsets()
             if (!appearanceUpdatedInListener) {
-                // @TODO: appearance is sometimes not updated on app load
-                // probably because it is superseded by another plugin or native thing that updates the appearance
-                // This is probably not the best way to override that behaviour
-                // So we should think of something better than simply calling `updateAppearance` here
                 updateAppearance(appearanceConfig)
-                // Only update it once, to prevent an infinite loop
                 appearanceUpdatedInListener = true
             }
             view.onApplyWindowInsets(insets)
@@ -64,12 +57,15 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             val window = activity.window
             val decorView = window.decorView
 
-            val insetsController =
-                WindowCompat.getInsetsController(window, decorView)
-            insetsController.isAppearanceLightStatusBars =
-                appearanceConfig.statusBarContent == "dark"
-            insetsController.isAppearanceLightNavigationBars =
-                appearanceConfig.navigationBarContent == "dark"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                window.attributes.layoutInDisplayCutoutMode =
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+
+            val insetsController = WindowCompat.getInsetsController(window, decorView)
+            insetsController.isAppearanceLightStatusBars = appearanceConfig.statusBarContent == "dark"
+            insetsController.isAppearanceLightNavigationBars = appearanceConfig.navigationBarContent == "dark"
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 window.isNavigationBarContrastEnforced = false
                 window.isStatusBarContrastEnforced = false
@@ -83,16 +79,11 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 val controller = window.insetsController
                 controller?.apply {
                     setSystemBarsAppearance(
-                        if (appearanceConfig.statusBarContent == "dark")
-                            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                        else 0,
+                        if (appearanceConfig.statusBarContent == "dark") WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS else 0,
                         WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
                     )
-
                     setSystemBarsAppearance(
-                        if (appearanceConfig.navigationBarContent == "dark")
-                            WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
-                        else 0,
+                        if (appearanceConfig.navigationBarContent == "dark") WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS else 0,
                         WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
                     )
                 }
@@ -106,10 +97,8 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 }
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 if (appearanceConfig.statusBarContent == "dark") {
-                    decorView.systemUiVisibility =
-                        decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
+                    decorView.systemUiVisibility = decorView.systemUiVisibility or View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR
                 }
-
                 if (appearanceConfig.customColorsForSystemBars) {
                     window.statusBarColor = safeParseColor(appearanceConfig.statusBarColor)
                     window.navigationBarColor = safeParseColor(appearanceConfig.navigationBarColor)
@@ -141,25 +130,34 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                 WindowCompat.setDecorFitsSystemWindows(activity.window, false)
             }
 
-            val windowInsets = ViewCompat.getRootWindowInsets(activity.window.decorView)
-            val systemBarsInsets =
-                windowInsets?.getInsets(WindowInsetsCompat.Type.systemBars()) ?: Insets.NONE
-            val navBarInsets = windowInsets?.getInsets(WindowInsetsCompat.Type.navigationBars()) ?: Insets.NONE
-            val imeInsets = windowInsets?.getInsets(WindowInsetsCompat.Type.ime()) ?: Insets.NONE
+            val decorView = activity.window.decorView
+            val windowInsets = ViewCompat.getRootWindowInsets(decorView) ?: return@runOnUiThread
 
+            val systemBarsInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val navBarInsets = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars())
             val density = activity.resources.displayMetrics.density
+
+            val rect = Rect()
+            decorView.getWindowVisibleDisplayFrame(rect)
+
+            val physicalBottomGap = decorView.height - rect.bottom
+
+            val trueNavHeight = Math.min(navBarInsets.bottom, physicalBottomGap)
+
+            val isKeyboardVisible = physicalBottomGap > (trueNavHeight + 100)
+
+            val actualImeHeight = if (isKeyboardVisible) physicalBottomGap else 0
 
             setProperty("top", Math.round(systemBarsInsets.top / density) + offset)
             setProperty("left", Math.round(systemBarsInsets.left / density))
             setProperty("right", Math.round(systemBarsInsets.right / density))
 
-            val bottomHeight = navBarInsets.bottom
-            setProperty("bottom", Math.round(bottomHeight / density) + offset)
+            if (isKeyboardVisible) {
+                setProperty("bottom", offset)
+            } else {
+                setProperty("bottom", Math.round(trueNavHeight / density) + offset)
+            }
 
-            val imeHeight = (imeInsets.bottom - systemBarsInsets.bottom).coerceAtLeast(0)
-
-            val decorView = activity.window.decorView
-            val isKeyboardVisible = windowInsets?.isVisible(WindowInsetsCompat.Type.ime()) ?: false
             val contentView = decorView.findViewById<ViewGroup>(android.R.id.content)
 
             contentView?.let { content ->
@@ -174,9 +172,10 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                     webView.evaluateJavascript("document.body.clientHeight") { result ->
                         val webHeight = result?.replace("\"", "")?.toFloatOrNull() ?: 0f
                         val screenHeightCss = decorView.height / density
-                        val imeHeightCss = imeHeight / density
 
-                        val isWindowShrunk = imeHeight > 0 && webHeight > 0 && (screenHeightCss - webHeight) > (imeHeightCss * 0.8)
+                        val imeHeightCss = actualImeHeight / density
+
+                        val isWindowShrunk = actualImeHeight > 0 && webHeight > 0 && (screenHeightCss - webHeight) > (imeHeightCss * 0.8)
 
                         val isShrunkByOurPadding = isWindowShrunk && currentPaddingBottom > 0
 
@@ -185,7 +184,7 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
                                 content.setPadding(0, 0, 0, 0)
                                 isEnvironmentAutoResizing = true
                             } else if (!isEnvironmentAutoResizing) {
-                                content.setPadding(0, 0, 0, imeHeight)
+                                content.setPadding(0, 0, 0, actualImeHeight)
                             }
                         }
                     }
