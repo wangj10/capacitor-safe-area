@@ -6,9 +6,11 @@ import android.graphics.Rect
 import android.os.Build
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.webkit.WebView
+import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -18,33 +20,43 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
     private var appearanceUpdatedInListener = false
     private var decorFitsSystemWindowsNegated = false
 
-    private var isEnvironmentAutoResizing = false
+    private var lastSystemBarsInsets: Insets? = null
+    private var lastKeyboardHeight = -1
+    private var lastKeyboardVisible = false
 
-    fun enable(updateInsets: Boolean, appearanceConfig: AppearanceConfig) {
-        activity.window.decorView.getRootView().setOnApplyWindowInsetsListener { view, insets ->
-            updateInsets()
+    private var appearanceConfigCache: AppearanceConfig = AppearanceConfig()
+
+    private val globalLayoutListener = ViewTreeObserver.OnGlobalLayoutListener {
+        val insets = ViewCompat.getRootWindowInsets(activity.window.decorView)
+        insets?.let {
+            updateInsets(it)
             if (!appearanceUpdatedInListener) {
-                updateAppearance(appearanceConfig)
+                updateAppearance(appearanceConfigCache)
                 appearanceUpdatedInListener = true
             }
-            view.onApplyWindowInsets(insets)
         }
+    }
+
+    fun enable(updateInsets: Boolean, appearanceConfig: AppearanceConfig) {
+        this.appearanceConfigCache = appearanceConfig
+
+        activity.window.decorView.viewTreeObserver.addOnGlobalLayoutListener(globalLayoutListener)
 
         resetDecorFitsSystemWindows()
         updateAppearance(appearanceConfig)
 
         if (updateInsets) {
-            updateInsets()
+            val insets = ViewCompat.getRootWindowInsets(activity.window.decorView)
+            insets?.let { updateInsets(it) }
         }
     }
 
     fun disable(appearanceConfig: AppearanceConfig) {
         activity.runOnUiThread {
             WindowCompat.setDecorFitsSystemWindows(activity.window, true)
+            activity.window.decorView.viewTreeObserver.removeOnGlobalLayoutListener(globalLayoutListener)
         }
-        activity.window.decorView.getRootView().setOnApplyWindowInsetsListener(null)
         resetProperties()
-
         updateAppearance(appearanceConfig)
     }
 
@@ -123,7 +135,7 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
         }
     }
 
-    private fun updateInsets() {
+    private fun updateInsets(windowInsets: WindowInsetsCompat) {
         activity.runOnUiThread {
             if (!decorFitsSystemWindowsNegated) {
                 decorFitsSystemWindowsNegated = true
@@ -131,22 +143,41 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             }
 
             val decorView = activity.window.decorView
-            val windowInsets = ViewCompat.getRootWindowInsets(decorView) ?: return@runOnUiThread
-
-            val systemBarsInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
-            val navBarInsets = windowInsets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            val contentView = decorView.findViewById<ViewGroup>(android.R.id.content)
             val density = activity.resources.displayMetrics.density
 
-            val rect = Rect()
-            decorView.getWindowVisibleDisplayFrame(rect)
+            val systemBarsInsets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars())
+            val baseBottomHeight = systemBarsInsets.bottom
 
-            val physicalBottomGap = decorView.height - rect.bottom
+            var isKeyboardVisible = false
+            var absoluteKeyboardHeight = 0
 
-            val trueNavHeight = Math.min(navBarInsets.bottom, physicalBottomGap)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val imeInsets = windowInsets.getInsets(WindowInsetsCompat.Type.ime())
+                isKeyboardVisible = windowInsets.isVisible(WindowInsetsCompat.Type.ime())
 
-            val isKeyboardVisible = physicalBottomGap > (trueNavHeight + 100)
+                if (isKeyboardVisible) {
+                    absoluteKeyboardHeight = imeInsets.bottom
+                }
+            } else {
+                val rect = Rect()
+                decorView.getWindowVisibleDisplayFrame(rect)
+                val physicalBottomGap = decorView.height - rect.bottom
+                isKeyboardVisible = physicalBottomGap > (baseBottomHeight + 100)
+                if (isKeyboardVisible) {
+                    absoluteKeyboardHeight = physicalBottomGap
+                }
+            }
 
-            val actualImeHeight = if (isKeyboardVisible) physicalBottomGap else 0
+            if (lastSystemBarsInsets == systemBarsInsets &&
+                lastKeyboardHeight == absoluteKeyboardHeight &&
+                lastKeyboardVisible == isKeyboardVisible) {
+                return@runOnUiThread
+            }
+
+            lastSystemBarsInsets = systemBarsInsets
+            lastKeyboardHeight = absoluteKeyboardHeight
+            lastKeyboardVisible = isKeyboardVisible
 
             setProperty("top", Math.round(systemBarsInsets.top / density) + offset)
             setProperty("left", Math.round(systemBarsInsets.left / density))
@@ -155,42 +186,23 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
             if (isKeyboardVisible) {
                 setProperty("bottom", offset)
             } else {
-                setProperty("bottom", Math.round(trueNavHeight / density) + offset)
+                setProperty("bottom", Math.round(baseBottomHeight / density) + offset)
             }
 
-            val contentView = decorView.findViewById<ViewGroup>(android.R.id.content)
+            var paddingToApply = 0
+            if (isKeyboardVisible) {
+                val currentContentPadding = contentView?.paddingBottom ?: 0
+                val externalShrinkage = (decorView.height - webView.height) - currentContentPadding
 
-            contentView?.let { content ->
-                if (isEnvironmentAutoResizing) {
-                    content.setPadding(0, 0, 0, 0)
-                    return@let
-                }
-
-                if (isKeyboardVisible) {
-                    val currentPaddingBottom = content.paddingBottom
-
-                    webView.evaluateJavascript("document.body.clientHeight") { result ->
-                        val webHeight = result?.replace("\"", "")?.toFloatOrNull() ?: 0f
-                        val screenHeightCss = decorView.height / density
-
-                        val imeHeightCss = actualImeHeight / density
-
-                        val isWindowShrunk = actualImeHeight > 0 && webHeight > 0 && (screenHeightCss - webHeight) > (imeHeightCss * 0.8)
-
-                        val isShrunkByOurPadding = isWindowShrunk && currentPaddingBottom > 0
-
-                        activity.runOnUiThread {
-                            if (isWindowShrunk && !isShrunkByOurPadding) {
-                                content.setPadding(0, 0, 0, 0)
-                                isEnvironmentAutoResizing = true
-                            } else if (!isEnvironmentAutoResizing) {
-                                content.setPadding(0, 0, 0, actualImeHeight)
-                            }
-                        }
-                    }
+                if (externalShrinkage > absoluteKeyboardHeight * 0.5) {
+                    paddingToApply = 0
                 } else {
-                    content.setPadding(0, 0, 0, 0)
+                    paddingToApply = absoluteKeyboardHeight
                 }
+            }
+
+            if (contentView != null && contentView.paddingBottom != paddingToApply) {
+                contentView.setPadding(0, 0, 0, paddingToApply)
             }
         }
     }
@@ -204,7 +216,10 @@ class SafeArea(private val activity: Activity, private val webView: WebView) {
 
     private fun setProperty(position: String, size: Int) {
         activity.runOnUiThread {
-            webView.loadUrl("javascript:document.querySelector(':root')?.style.setProperty('--safe-area-inset-" + position + "', 'max(env(safe-area-inset-" + position + "), " + size + "px)');void(0);")
+            webView.evaluateJavascript(
+                "document.querySelector(':root')?.style.setProperty('--safe-area-inset-$position', 'max(env(safe-area-inset-$position), ${size}px)');",
+                null
+            )
         }
     }
 }
